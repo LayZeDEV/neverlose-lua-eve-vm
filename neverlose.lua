@@ -1,6 +1,6 @@
 local nlui = {}
 nlui.__index = nlui
-nlui.version = "2.1.0"
+nlui.version = "2.2.0"
 nlui.dropdownMax = 6
 
 local draw, color = draw, color
@@ -589,6 +589,11 @@ function Container:input(id, label, default, placeholder)
   return newItem(self, "input", id, label, default or "", { placeholder = placeholder or "" })
 end
 
+function Container:preview(id, opts)
+  opts = opts or {}
+  return newItem(self, "preview", id, opts.label or "ESP Preview", false, { bind = opts, h = opts.height or 300 })
+end
+
 function Tab:section(side, title, single)
   local sec = newContainer(self.menu, title, single)
   local col = (side == "right") and 2 or 1
@@ -609,7 +614,7 @@ function nlui.new(opts)
   m.logo = opts.logo or "A"
   m.logoImage = opts.logoImage
   m.avatarImage = opts.avatarImage
-  m.avatarMask = opts.avatarMask ~= false
+  m.avatarMask = opts.avatarMask == true
   m.user = opts.user or "User"
   m.userSub = opts.userSub or ""
   m.toggleKey = opts.toggleKey or "M"
@@ -1408,6 +1413,10 @@ end
 
 function nlui:drawRow(it, x, y, w, h, ctrlW, C, layer, first, last, r)
   local s = self.scale
+  if it.t == "preview" then
+    self:drawEspFigure(it.bind, x + 14 * s, y + 14 * s, w - 28 * s, h - 28 * s)
+    return
+  end
   local hov = self.hoverLayer == layer and self:hover(x, y, w, h)
   local ha = self:anim("rh:" .. it.id .. ":" .. layer, hov and 1 or 0, 24, 0)
   if ha > 0.01 then
@@ -1601,18 +1610,24 @@ function nlui:drawContent(L)
           if lcy - 7 * s >= top and lcy + 7 * s <= bottom then textC(supper(sec.title), col.x + 22 * s, lcy, theme.muted, 14 * s) end
           y = y + 30 * s
           local rowH = sec.single and 60 * s or 63 * s
-          local ch = rowH * #visible
+          local heights, ch = {}, 0
+          for i, it in ipairs(visible) do
+            heights[i] = (it.t == "preview") and it.h * s or rowH
+            ch = ch + heights[i]
+          end
           local c0, c1 = max(y, top), min(y + ch, bottom)
           if c1 - c0 > 1 then
             rect(col.x, c0, col.w, c1 - c0, theme.card, 14 * s, theme.cardAlpha)
             outline(col.x, c0, col.w, c1 - c0, theme.white, 14 * s, theme.borderAlpha)
           end
+          local ry = y
           for i, it in ipairs(visible) do
-            local ry = y + (i - 1) * rowH
-            if ry >= top - 0.5 and ry + rowH <= bottom + 0.5 then
+            local rh = heights[i]
+            if ry >= top - 0.5 and ry + rh <= bottom + 0.5 then
               if i > 1 then rect(col.x, ry, col.w, 1, theme.white, 0, theme.lineAlpha) end
-              self:drawRow(it, col.x, ry, col.w, rowH, col.ctrlW, self.C.full, 0, i == 1, i == #visible, 13 * s)
+              self:drawRow(it, col.x, ry, col.w, rh, col.ctrlW, self.C.full, 0, i == 1, i == #visible, 13 * s)
             end
+            ry = ry + rh
           end
           y = y + ch
           first = false
@@ -1996,16 +2011,18 @@ end
 function nlui:drawEspPreview(p, X, Y)
   local s = self.scale
   local w, h = p.w * s, p.h * s
-  local r = 10 * s
-  self:panelFrame(X, Y, w, h, r)
+  self:panelFrame(X, Y, w, h, 10 * s)
   textC(p.title, X + 14 * s, Y + 18 * s, theme.text, 14 * s)
-  local ix, iy, iw, ih = X + 10 * s, Y + 32 * s, w - 20 * s, h - 42 * s
+  self:drawEspFigure(p.bind, X + 10 * s, Y + 32 * s, w - 20 * s, h - 42 * s)
+end
+
+function nlui:drawEspFigure(bind, ix, iy, iw, ih)
+  local s = self.scale
   rect(ix, iy, iw, ih, theme.espBottom, 8 * s)
   gradient(ix + 8 * s, iy, iw - 16 * s, ih, theme.espTop, theme.espBottom, false, 255, 255)
   gradient(ix, iy + 8 * s, iw, ih - 16 * s, theme.espTop, theme.espBottom, false, 255, 255)
   for gx = ix + 20 * s, ix + iw - 8 * s, 20 * s do rect(gx, iy + 6 * s, 1, ih - 12 * s, theme.white, 0, 5) end
   for gy = iy + 20 * s, iy + ih - 8 * s, 20 * s do rect(ix + 6 * s, gy, iw - 12 * s, 1, theme.white, 0, 5) end
-  local bind = p.bind
   local enabled = self:bindOn(bind, "enabled", true)
   local fh = ih * 0.6
   local cx = ix + iw / 2
