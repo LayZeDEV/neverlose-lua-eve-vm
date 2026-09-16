@@ -1,6 +1,6 @@
 local nlui = {}
 nlui.__index = nlui
-nlui.version = "2.2.0"
+nlui.version = "2.2.1"
 nlui.dropdownMax = 6
 
 local draw, color = draw, color
@@ -47,6 +47,7 @@ local function rgb(r, g, b) return color.rgba(r, g, b, 255) end
 
 local theme = {
   font = "Verdana",
+  textMode = "sized",
   menuBg = rgb(15, 16, 20),
   bgAlpha = 250,
   sheenAlpha = 7,
@@ -169,9 +170,17 @@ do
   for _, k in ipairs(rest) do nlui.pollKeys[#nlui.pollKeys + 1] = k end
 end
 
-local baseH
+local baseH, cachedFont, cachedMode
 local mcache, mcount = {}, 0
+local function namedMode()
+  return theme.textMode == "named" or type(draw.text) ~= "function"
+end
 local function measure(t, size)
+  if cachedFont ~= theme.font or cachedMode ~= theme.textMode then
+    cachedFont, cachedMode = theme.font, theme.textMode
+    baseH = nil
+    mcache, mcount = {}, 0
+  end
   if not baseH then
     local ok, w, h = pcall(draw.GetTextSize, "Ag", theme.font)
     baseH = (ok and type(h) == "number" and h > 0) and h or 13
@@ -181,7 +190,7 @@ local function measure(t, size)
   if c then return c[1], c[2] end
   local ok, w, h = pcall(draw.GetTextSize, t, theme.font)
   if not ok or type(w) ~= "number" then w, h = #t * baseH * 0.55, baseH end
-  local k = size / baseH
+  local k = namedMode() and 1 or (size / baseH)
   if mcount > 4000 then mcache, mcount = {}, 0 end
   mcache[key] = { w * k, (h or baseH) * k }
   mcount = mcount + 1
@@ -220,11 +229,20 @@ nlui.mix = mix
 local function text(t, x, y, col, size, a)
   local al = A(a)
   if al <= 0 then return end
-  if draw.text then
-    draw.text(t, floor(x), floor(y), col, floor(size + 0.5), al)
+  if namedMode() then
+    if type(draw.text_font) == "function" then
+      draw.text_font(t, floor(x), floor(y), col, theme.font, al)
+    else
+      draw.Text(t, floor(x), floor(y), col, theme.font, al)
+    end
   else
-    draw.Text(t, floor(x), floor(y), col, theme.font, al)
+    draw.text(t, floor(x), floor(y), col, floor(size + 0.5), al)
   end
+end
+
+function nlui.setFont(name, mode)
+  if name then theme.font = name end
+  if mode then theme.textMode = mode end
 end
 
 local function textC(t, x, cy, col, size, a)
