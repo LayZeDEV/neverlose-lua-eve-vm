@@ -1,6 +1,6 @@
 local nlui = {}
 nlui.__index = nlui
-nlui.version = "2.0.0"
+nlui.version = "2.0.1"
 nlui.dropdownMax = 6
 
 local draw, color = draw, color
@@ -316,6 +316,13 @@ local function copy(v)
 end
 
 function nlui.loadImage(src)
+  if type(src) == "table" then
+    for _, candidate in ipairs(src) do
+      local h = nlui.loadImage(candidate)
+      if h.id ~= nil or h.pending then return h end
+    end
+    return { id = nil, src = src }
+  end
   local holder = { id = nil, src = src }
   if type(src) == "number" then holder.id = src return holder end
   if type(src) ~= "string" or src == "" then return holder end
@@ -332,6 +339,7 @@ function nlui.loadImage(src)
   if sfind(src, "^https?://") then
     local h = rawget(G, "http")
     if type(h) == "table" and type(h.Get) == "function" then
+      holder.pending = true
       pcall(h.Get, src, nil, finish)
     end
   else
@@ -2055,10 +2063,48 @@ function nlui:drawWindow(L)
   if self.inputError then
     textC("nlui input error: " .. fit(self.inputError, (W - 400) * s, 14 * s), L.mainX, Y + H - 14 * s, theme.danger, 14 * s)
   end
+  if self.debug then
+    local d = sformat("dt %.4f  src %s  now %.2f  fps %d  frame %d  popups %d  anims %d", self.dt, tostring(self.timeSource), self.now, floor(self.fps + 0.5), self.frame, #self.popups, self:animCount())
+    textC(d, X, Y - 18 * s, theme.text, 13 * s)
+  end
 end
 
-function nlui:render()
-  local ok, err = pcall(self.renderInner, self)
+function nlui:animCount()
+  local n = 0
+  for _ in pairs(self.anims) do n = n + 1 end
+  return n
+end
+
+function nlui:frameTime(dt)
+  local raw, src = nil, "fallback"
+  if type(dt) == "number" and dt == dt and dt > 0 then raw, src = dt, "onPaint" end
+  if raw == nil then
+    local ut = rawget(G, "utility")
+    if type(ut) == "table" and type(ut.GetDeltaTime) == "function" then
+      local ok, v = pcall(ut.GetDeltaTime)
+      if ok and type(v) == "number" and v > 0 then raw, src = v, "utility" end
+    end
+  end
+  if raw == nil then
+    local tm = rawget(G, "time")
+    if type(tm) == "table" and type(tm.dt) == "function" then
+      local ok, v = pcall(tm.dt)
+      if ok and type(v) == "number" and v > 0 then raw, src = v, "time.dt" end
+    end
+  end
+  if raw == nil then
+    local t = now()
+    if t and self.lastClock and t > self.lastClock then raw, src = t - self.lastClock, "clock" end
+    self.lastClock = t
+  end
+  if raw and raw > 1 then raw = raw / 1000 end
+  if not raw or raw <= 0 then raw = self.dt or 1 / 60 end
+  self.timeSource = src
+  return clamp(raw, 0.001, 0.05)
+end
+
+function nlui:render(dt)
+  local ok, err = pcall(self.renderInner, self, dt)
   if not ok then
     if self.lastError ~= err then
       self.lastError = err
@@ -2069,16 +2115,10 @@ function nlui:render()
   end
 end
 
-function nlui:renderInner()
+function nlui:renderInner(dt)
   self.frame = self.frame + 1
-  local t = now()
-  if t == nil then t = self.frame / 60 end
-  if self.lastNow then
-    self.dt = clamp(t - self.lastNow, 0.0005, 0.1)
-  else
-    self.dt = 1 / 60
-  end
-  self.lastNow, self.now = t, t
+  self.dt = self:frameTime(dt)
+  self.now = self.now + self.dt
   self.fps = self:anim("fps", 1 / self.dt, 3)
   self:beginFrame()
   if self.followMenu then
