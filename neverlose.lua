@@ -1,6 +1,6 @@
 local nlui = {}
 nlui.__index = nlui
-nlui.version = "2.3.0"
+nlui.version = "2.4.0"
 nlui.dropdownMax = 6
 
 local draw, color = draw, color
@@ -636,8 +636,26 @@ function Container:multiselect(id, label, options, default)
   return newItem(self, "multi", id, label, sortedCopy(default or { options[1] }), { options = options })
 end
 
-function Container:slider(id, label, mn, mx, default, unit, zero)
-  return newItem(self, "slider", id, label, default or mn, { min = mn, max = mx, unit = unit or "", zero = zero })
+local function snapValue(v, mn, mx, step, decimals)
+  step = step or 1
+  v = mn + floor((v - mn) / step + 0.5) * step
+  if decimals and decimals > 0 then v = tonumber(sformat("%." .. decimals .. "f", v)) or v end
+  return clamp(v, mn, mx)
+end
+
+function Container:slider(id, label, mn, mx, default, unit, zero, step)
+  step = step or 1
+  local decimals = 0
+  if step < 1 then decimals = max(0, math.ceil(-(math.log(step) / math.log(10)) - 1e-9)) end
+  return newItem(self, "slider", id, label, snapValue(default or mn, mn, mx, step, decimals), { min = mn, max = mx, unit = unit or "", zero = zero, step = step, decimals = decimals })
+end
+
+function Container:button(id, label, fn, caption)
+  return newItem(self, "button", id, label, false, { fn = fn, caption = caption or "Apply" })
+end
+
+function Container:label(id, label, value)
+  return newItem(self, "label", id, label, false, { value = value })
 end
 
 function Container:keybind(id, label, default)
@@ -1077,8 +1095,7 @@ function nlui:commitEdit()
   local n
   if t == "" or (e.zero and slower(t) == slower(e.zero)) then n = e.min else n = tonumber(t) end
   if n == nil then return end
-  n = clamp(n, e.min, e.max)
-  e.apply(floor(n + 0.5))
+  e.apply(snapValue(n, e.min, e.max, e.step or 1, e.decimals or 0))
 end
 
 function nlui:beginFrame()
@@ -1322,13 +1339,13 @@ function nlui:dropdownCtl(it, x, cy, w, C, layer)
   if self:click(x, y, w, h, layer) then self:openDropdown(it, x, y, w, h, C, layer) end
 end
 
-function nlui:sliderValue(mn, mx, trackX, usable, knob)
+function nlui:sliderValue(mn, mx, trackX, usable, knob, step, decimals)
   local p = (self.mx - trackX - knob / 2) / max(1, usable)
   p = clamp(p, 0, 1)
-  return floor(mn + p * (mx - mn) + 0.5)
+  return snapValue(mn + p * (mx - mn), mn, mx, step or 1, decimals or 0)
 end
 
-function nlui:sliderCtl(key, v, mn, mx, x, right, cy, C, layer, fmtFn, zeroWord, apply)
+function nlui:sliderCtl(key, v, mn, mx, x, right, cy, C, layer, fmtFn, zeroWord, apply, step, decimals)
   local s = self.scale
   local txt = fmtFn(v)
   local editing = self.editing
@@ -1346,10 +1363,10 @@ function nlui:sliderCtl(key, v, mn, mx, x, right, cy, C, layer, fmtFn, zeroWord,
   local usable = trackW - C.sKnob
   local drag = self.drag
   if drag and drag.key == key then
-    if self.ldown then v = self:sliderValue(mn, mx, trackX, usable, C.sKnob) else self.drag = nil end
+    if self.ldown then v = self:sliderValue(mn, mx, trackX, usable, C.sKnob, step, decimals) else self.drag = nil end
   elseif self:click(trackX, cy - 16 * s, trackW, 32 * s, layer) then
     self.drag = { key = key }
-    v = self:sliderValue(mn, mx, trackX, usable, C.sKnob)
+    v = self:sliderValue(mn, mx, trackX, usable, C.sKnob, step, decimals)
   end
   local p = clamp((v - mn) / range, 0, 1)
   local dragging = self.drag and self.drag.key == key
@@ -1378,7 +1395,11 @@ function nlui:sliderCtl(key, v, mn, mx, x, right, cy, C, layer, fmtFn, zeroWord,
   else
     textC(txt, vx + vw / 2 - tw / 2, cy, theme.text, C.valFont)
     if self:click(vx, vy, vw, vh, layer) then
-      self.editing = { key = key, text = (zeroWord and v == mn) and "" or tostring(floor(v + 0.5)), min = mn, max = mx, zero = zeroWord, rect = { vx, vy, vw, vh }, apply = apply }
+      local initial = ""
+      if not (zeroWord and v == mn) then
+        if decimals and decimals > 0 then initial = sformat("%." .. decimals .. "f", v) else initial = tostring(floor(v + 0.5)) end
+      end
+      self.editing = { key = key, text = initial, min = mn, max = mx, zero = zeroWord, step = step, decimals = decimals, rect = { vx, vy, vw, vh }, apply = apply }
     end
   end
   return v
@@ -1386,7 +1407,45 @@ end
 
 function nlui:fmt(it, v)
   if it.zero and v == it.min then return it.zero end
+  if it.decimals and it.decimals > 0 then return sformat("%." .. it.decimals .. "f", v) .. (it.unit or "") end
   return tostring(floor(v + 0.5)) .. (it.unit or "")
+end
+
+function nlui:buttonCtl(it, right, cy, C, layer)
+  local s = self.scale
+  local tw = measure(it.caption, C.keyFont)
+  local w = max(C.keyMin, tw + C.keyPad * 2 + 8 * s)
+  local x, y, h = right - w, cy - C.keyH / 2, C.keyH
+  local hov = self.hoverLayer == layer and self:hover(x, y, w, h)
+  local ha = self:anim("bh:" .. it.id, hov and 1 or 0, 22, 0)
+  local press = self:anim("bp:" .. it.id, (hov and self.ldown) and 1 or 0, 30, 0)
+  local flash = self:anim("bf:" .. it.id, (it.flashUntil and it.flashUntil > self.now) and 1 or 0, 14, 0)
+  rect(x + press * s, y + press * s, w - press * 2 * s, h - press * 2 * s, mix(theme.control, theme.blue, max(ha * 0.35, flash)), C.keyR)
+  if ha > 0.01 then rect(x, y, w, h, theme.white, C.keyR, 10 * ha) end
+  textC(it.caption, x + w / 2 - tw / 2, cy, mix(theme.text, theme.white, ha), C.keyFont)
+  if self:click(x, y, w, h, layer) then
+    it.flashUntil = self.now + 0.35
+    if type(it.fn) == "function" then
+      local ok, err = pcall(it.fn, it, self)
+      if not ok then self:toast("Button error: " .. tostring(err)) end
+    end
+  end
+end
+
+function nlui:labelText(it)
+  local v = it.value
+  if type(v) == "function" then
+    local ok, r = pcall(v, it, self)
+    v = ok and r or "-"
+  end
+  if v == nil then return "" end
+  return tostring(v)
+end
+
+function nlui:labelCtl(it, right, cy, C, layer)
+  local t = self:labelText(it)
+  local tw = measure(t, C.ddFont)
+  textC(t, right - tw, cy, theme.muted, C.ddFont)
 end
 
 function nlui:keyCtl(it, right, cy, C, layer)
@@ -1475,8 +1534,12 @@ function nlui:drawControl(it, ctrlX, right, cy, ctrlW, C, layer)
     local v = self:get(it.id)
     local nv = self:sliderCtl(it.id, v, it.min, it.max, ctrlX, right, cy, C, layer,
       function(x) return self:fmt(it, x) end, it.zero,
-      function(n) self:set(it.id, n) end)
+      function(n) self:set(it.id, n) end, it.step, it.decimals)
     if nv ~= v then self:set(it.id, nv) end
+  elseif it.t == "button" then
+    self:buttonCtl(it, right, cy, C, layer)
+  elseif it.t == "label" then
+    self:labelCtl(it, right, cy, C, layer)
   elseif it.t == "keybind" then
     self:keyCtl(it, right, cy, C, layer)
   elseif it.t == "color" then
@@ -1508,6 +1571,10 @@ function nlui:drawRow(it, x, y, w, h, ctrlW, C, layer, first, last, r)
     local v = self:get(it.id)
     local label = (self.capturing == it.id) and "..." or ((v ~= nil and v ~= "") and tostring(v) or "None")
     ctrlLeft = right - max(C.keyMin, measure(label, C.keyFont) + C.keyPad * 2)
+  elseif it.t == "button" then
+    ctrlLeft = right - max(C.keyMin, measure(it.caption, C.keyFont) + C.keyPad * 2 + 8 * s)
+  elseif it.t == "label" then
+    ctrlLeft = right - measure(self:labelText(it), C.ddFont)
   end
   local labelLimit = ctrlLeft
   if it.sub then
@@ -1831,7 +1898,7 @@ function nlui:drawColorPopup(p, idx)
     local cur = v[i] or 255
     local nv = self:sliderCtl(key, cur, 0, 255, right - 150 * s, right, cy, C, idx,
       function(x) return tostring(floor(x + 0.5)) end, nil,
-      function(n) local c = copy(self:get(it.id)) c[i] = n self:set(it.id, c) end)
+      function(n) local c = copy(self:get(it.id)) c[i] = floor(n + 0.5) self:set(it.id, c) end)
     if nv ~= cur then
       local c = copy(v)
       c[i] = nv
