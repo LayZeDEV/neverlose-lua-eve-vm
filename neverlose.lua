@@ -12,7 +12,18 @@ local ssub, sfind, slower, supper, sformat, sgsub = string.sub, string.find, str
 local insert, remove, concat, sort = table.insert, table.remove, table.concat, table.sort
 local unpack = unpack or table.unpack
 local loadfn = loadstring or load
-local clock = (os and os.clock) or nil
+local G = _G or _ENV or {}
+
+local function now()
+  local t = rawget(G, "time")
+  if type(t) == "table" and type(t.now) == "function" then
+    local ok, v = pcall(t.now)
+    if ok and type(v) == "number" then return v end
+  end
+  local o = rawget(G, "os")
+  if type(o) == "table" and type(o.clock) == "function" then return o.clock() end
+  return nil
+end
 
 local function rgb(r, g, b) return color.rgba(r, g, b, 255) end
 
@@ -66,9 +77,27 @@ local function probe(tbl, names)
   end
 end
 
+local EVE_BUTTONS = { [1] = "left", [2] = "right", [3] = "middle", [4] = "x1", [5] = "x2" }
+local EVE_KEYS = { Space = "space", Backspace = "backspace", Enter = "enter", Escape = "escape", Tab = "tab", Shift = "shift", Ctrl = "ctrl", Alt = "alt", Insert = "insert", Delete = "delete", Home = "home", End = "end", Up = 38, Down = 40, Left = 37, Right = 39, ["."] = 190, ["-"] = 189 }
+
 function nlui.autobind()
-  local g = _G or {}
-  local inp = rawget(g, "input") or rawget(g, "Input")
+  local mouseApi, kb = rawget(G, "mouse"), rawget(G, "keyboard")
+  if type(mouseApi) == "table" and type(kb) == "table" and type(mouseApi.GetPosition) == "function" and type(kb.IsPressed) == "function" then
+    nlui.input.mouse = function() return mouseApi.GetPosition() end
+    nlui.input.down = function(b)
+      local n = EVE_BUTTONS[b]
+      if not n then return false end
+      return mouseApi.IsPressed(n) == true
+    end
+    nlui.input.key = function(k)
+      local n = EVE_KEYS[k]
+      if n == nil then n = type(k) == "string" and slower(k) or k end
+      return kb.IsPressed(n) == true
+    end
+    nlui.bound = "eve"
+    return true
+  end
+  local inp = rawget(G, "input") or rawget(G, "Input")
   if type(inp) ~= "table" then return false end
   local m = probe(inp, { "GetMousePos", "GetCursorPos", "get_mouse_pos", "mouse_position", "GetMousePosition" })
   local d = probe(inp, { "IsMouseDown", "IsButtonDown", "is_mouse_down", "mouse_down", "IsMouseButtonDown" })
@@ -76,7 +105,27 @@ function nlui.autobind()
   if m then nlui.input.mouse = function() return m() end end
   if d then nlui.input.down = function(b) return d(b) end end
   if k then nlui.input.key = function(n) return k(n) end end
+  if m then nlui.bound = "input" end
   return m ~= nil
+end
+
+function nlui.menuState()
+  local c = rawget(G, "cheat")
+  if type(c) == "table" and type(c.GetMenuState) == "function" then
+    local ok, v = pcall(c.GetMenuState)
+    if ok and type(v) == "boolean" then return v end
+  end
+  local u = rawget(G, "ui")
+  if type(u) == "table" and type(u.menu_open) == "function" then
+    local ok, v = pcall(u.menu_open)
+    if ok and type(v) == "boolean" then return v end
+  end
+  local ut = rawget(G, "utility")
+  if type(ut) == "table" and type(ut.GetMenuState) == "function" then
+    local ok, v = pcall(ut.GetMenuState)
+    if ok and type(v) == "boolean" then return v end
+  end
+  return nil
 end
 
 nlui.pollKeys = {}
@@ -356,7 +405,9 @@ function nlui.new(opts)
   m.frame = 0
   m.keyPrev, m.keyNow, m.pressedKeys, m.pressedSet = {}, {}, {}, {}
   m.onSave = opts.onSave
-  m.onLoad = opts.onLoad
+  m.file = opts.file
+  m.followMenu = opts.followMenu
+  if m.followMenu == nil then m.followMenu = nlui.menuState() ~= nil end
   m.mx, m.my = -1, -1
   return m
 end
@@ -525,18 +576,47 @@ function nlui:load(str)
   return true
 end
 
+local function fileApi()
+  local f = rawget(G, "file")
+  if type(f) == "table" and type(f.read) == "function" and type(f.write) == "function" then return f end
+  return nil
+end
+
+function nlui:saveFile(path)
+  path = path or self.file
+  local f = fileApi()
+  if not path or not f then return false end
+  local dir = string.match(path, "^(.*)/[^/]+$")
+  if dir and type(f.mkdir) == "function" then pcall(f.mkdir, dir) end
+  local ok = pcall(f.write, path, self:serialize())
+  return ok == true
+end
+
+function nlui:loadFile(path)
+  path = path or self.file
+  local f = fileApi()
+  if not path or not f then return false end
+  local ok, str = pcall(f.read, path)
+  if ok and type(str) == "string" and str ~= "" then return self:load(str) end
+  return false
+end
+
 function nlui:save()
   self.saveFlash = self.frame + 25
-  self:toast("Saved " .. self.config)
   if self.onSave then
-    local ok, err = pcall(self.onSave, self.config, self:serialize(), self)
-    if not ok then self:toast("Save hook failed") end
+    local ok = pcall(self.onSave, self.config, self:serialize(), self)
+    self:toast(ok and ("Saved " .. self.config) or "Save hook failed")
+  elseif self.file then
+    self:toast(self:saveFile() and ("Saved " .. self.config) or "Could not write config file")
+  else
+    self:toast("Saved " .. self.config)
   end
 end
 
 function nlui:toast(msg)
   self.toastText = msg
-  if clock then self.toastUntil = clock() + 1.6 else self.toastFrames = 120 end
+  local t = now()
+  if t then self.toastUntil = t + 1.6 else self.toastFrames = 120 end
 end
 
 function nlui:hover(x, y, w, h)
@@ -1270,7 +1350,8 @@ end
 function nlui:drawToast()
   if not self.toastText then return end
   local alive
-  if clock then alive = clock() < (self.toastUntil or 0)
+  local t = now()
+  if t and self.toastUntil then alive = t < self.toastUntil
   else
     self.toastFrames = (self.toastFrames or 0) - 1
     alive = self.toastFrames > 0
@@ -1302,9 +1383,26 @@ function nlui:drawWindow()
 end
 
 function nlui:render()
+  local ok, err = pcall(self.renderInner, self)
+  if not ok then
+    if self.lastError ~= err then
+      self.lastError = err
+      if print then print("nlui error: " .. tostring(err)) end
+    end
+    self.errorFrames = (self.errorFrames or 0) + 1
+    pcall(text, "nlui error: " .. tostring(err), self.x, self.y - 20, theme.danger, 14)
+  end
+end
+
+function nlui:renderInner()
   self.frame = self.frame + 1
   self:beginFrame()
-  if self.pressedSet[self.toggleKey] then self.visible = not self.visible end
+  if self.followMenu then
+    local st = nlui.menuState()
+    if st ~= nil then self.visible = st end
+  elseif self.pressedSet[self.toggleKey] then
+    self.visible = not self.visible
+  end
   if not self.visible then
     self.popups = {}
     self.editing = nil
