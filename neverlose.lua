@@ -1,6 +1,6 @@
 local nlui = {}
 nlui.__index = nlui
-nlui.version = "2.0.1"
+nlui.version = "2.1.0"
 nlui.dropdownMax = 6
 
 local draw, color = draw, color
@@ -48,10 +48,10 @@ local function rgb(r, g, b) return color.rgba(r, g, b, 255) end
 local theme = {
   font = "Verdana",
   menuBg = rgb(15, 16, 20),
-  bgAlpha = 234,
+  bgAlpha = 250,
   sheenAlpha = 7,
   card = rgb(22, 23, 28),
-  cardAlpha = 244,
+  cardAlpha = 253,
   rowHover = rgb(28, 29, 35),
   control = rgb(37, 39, 46),
   controlHover = rgb(45, 47, 55),
@@ -71,12 +71,12 @@ local theme = {
   logoFg = rgb(20, 22, 51),
   activeItem = rgb(34, 36, 42),
   popup = rgb(30, 32, 38),
-  popupAlpha = 250,
+  popupAlpha = 255,
   danger = rgb(224, 107, 107),
   avatar = rgb(179, 37, 44),
   avatarDark = rgb(42, 20, 22),
   panelBg = rgb(17, 18, 23),
-  panelAlpha = 236,
+  panelAlpha = 246,
   espTop = rgb(28, 31, 42),
   espBottom = rgb(15, 16, 22),
   figure = rgb(58, 64, 82),
@@ -282,6 +282,31 @@ local function poly(points, col, closed, t, a)
   local al = A(a)
   if al <= 0 then return end
   draw.Polyline(points, col, closed or false, t or 1, al)
+end
+
+local function tri(x1, y1, x2, y2, x3, y3, col, a)
+  local al = A(a)
+  if al <= 0 then return end
+  if type(draw.TriangleFilled) == "function" then
+    draw.TriangleFilled(x1, y1, x2, y2, x3, y3, col, al)
+  else
+    draw.ConvexPolyFilled({ { x1, y1 }, { x2, y2 }, { x3, y3 } }, col, al)
+  end
+end
+
+local function coverCorners(cx, cy, r, col, a)
+  local starts = { { -1, -1, 180 }, { 1, -1, 270 }, { 1, 1, 0 }, { -1, 1, 90 } }
+  for _, c in ipairs(starts) do
+    local px, py = cx + c[1] * r, cy + c[2] * r
+    local a0 = c[3]
+    local lx, ly = cx + cos(rad(a0)) * r, cy + sin(rad(a0)) * r
+    for i = 1, 8 do
+      local ang = rad(a0 + i * 11.25)
+      local nx, ny = cx + cos(ang) * r, cy + sin(ang) * r
+      tri(px, py, lx, ly, nx, ny, col, a)
+      lx, ly = nx, ny
+    end
+  end
 end
 
 local function polyFill(points, col, a)
@@ -560,6 +585,10 @@ function Container:color(id, label, default)
   return newItem(self, "color", id, label, default or { 255, 255, 255, 255 })
 end
 
+function Container:input(id, label, default, placeholder)
+  return newItem(self, "input", id, label, default or "", { placeholder = placeholder or "" })
+end
+
 function Tab:section(side, title, single)
   local sec = newContainer(self.menu, title, single)
   local col = (side == "right") and 2 or 1
@@ -580,6 +609,7 @@ function nlui.new(opts)
   m.logo = opts.logo or "A"
   m.logoImage = opts.logoImage
   m.avatarImage = opts.avatarImage
+  m.avatarMask = opts.avatarMask ~= false
   m.user = opts.user or "User"
   m.userSub = opts.userSub or ""
   m.toggleKey = opts.toggleKey or "M"
@@ -965,6 +995,10 @@ function nlui:commitEdit()
     if t ~= "" then self:createConfig(t) end
     return
   end
+  if e.kind == "text" then
+    e.apply(t)
+    return
+  end
   local n
   if t == "" or (e.zero and slower(t) == slower(e.zero)) then n = e.min else n = tonumber(t) end
   if n == nil then return end
@@ -1013,10 +1047,10 @@ function nlui:beginFrame()
   self.typed = concat(typed)
 end
 
-function nlui:layout()
+function nlui:layout(slide)
   local s = self.scale
   local L = {}
-  L.X, L.Y, L.W, L.H = self.x, self.y, self.w * s, self.h * s
+  L.X, L.Y, L.W, L.H = self.x, self.y + (slide or 0), self.w * s, self.h * s
   L.sideW = 275 * s
   L.mainX = L.X + 293 * s
   L.mainR = L.X + L.W - 32 * s
@@ -1116,7 +1150,7 @@ function nlui:updateState(L)
       self.clickUsed = true
       self:closeAll()
     elseif self:hover(X, Y, 275 * s, 90 * s) then
-      self.dragWin = { self.mx - X, self.my - Y }
+      self.dragWin = { self.mx - self.x, self.my - self.y }
       self.clickUsed = true
       self:closeAll()
     end
@@ -1159,8 +1193,7 @@ end
 function nlui:drawAvatar(cx, cy, r)
   if imageReady(self.avatarImage) then
     drawImage(self.avatarImage, cx - r, cy - r, r * 2, r * 2)
-    ring(cx, cy, r + r * 0.5, theme.menuBg, r * 1.02, 255)
-    ring(cx, cy, r + 0.5, theme.white, 1, 30)
+    if self.avatarMask then coverCorners(cx, cy, r, theme.menuBg, 255) end
     return
   end
   circle(cx, cy, r, theme.avatar)
@@ -1314,8 +1347,49 @@ function nlui:colorCtl(it, right, cy, C, layer)
   if self:click(x, y, w, w, layer) then self:openColor(it, x, y, w, w, layer) end
 end
 
+function nlui:inputCtl(it, x, cy, w, C, layer)
+  local s = self.scale
+  local h = C.ddH
+  local y = cy - h / 2
+  local editing = self.editing
+  if not (editing and editing.key == it.id and editing.kind == "text") then editing = nil end
+  local hov = self.hoverLayer == layer and self:hover(x, y, w, h)
+  local ha = self:anim("inh:" .. it.id, (hov or editing) and 1 or 0, 22, 0)
+  rect(x, y, w, h, theme.control, C.ddR)
+  if ha > 0.01 then rect(x, y, w, h, theme.white, C.ddR, 12 * ha) end
+  local maxW = w - C.ddPadL * 2 - 4 * s
+  if editing then
+    outline(x, y, w, h, theme.blue, C.ddR, 255)
+    editing.rect = { x, y, w, h }
+    local shown = editing.text
+    local tw = measure(shown, C.ddFont)
+    local tx = x + C.ddPadL
+    if tw > maxW then
+      local n = #shown
+      while n > 0 and measure(ssub(shown, -n), C.ddFont) > maxW do n = n - 1 end
+      shown = ssub(shown, -n)
+      tw = measure(shown, C.ddFont)
+    end
+    textC(shown, tx, cy, theme.text, C.ddFont)
+    if (self.now % 1) < 0.5 then rect(tx + tw + 1, cy - C.ddFont * 0.55, max(1, s), C.ddFont * 1.1, theme.text) end
+  else
+    local v = self:get(it.id)
+    if v == nil or v == "" then
+      textC(fit(it.placeholder ~= "" and it.placeholder or "...", maxW, C.ddFont), x + C.ddPadL, cy, theme.muted, C.ddFont)
+    else
+      textC(fit(tostring(v), maxW, C.ddFont), x + C.ddPadL, cy, theme.text, C.ddFont)
+    end
+    if self:click(x, y, w, h, layer) then
+      self.capturing = nil
+      self.editing = { kind = "text", key = it.id, text = tostring(self:get(it.id) or ""), rect = { x, y, w, h }, apply = function(t) self:set(it.id, t) end }
+    end
+  end
+end
+
 function nlui:drawControl(it, ctrlX, right, cy, ctrlW, C, layer)
-  if it.t == "toggle" then
+  if it.t == "input" then
+    self:inputCtl(it, ctrlX, cy, ctrlW, C, layer)
+  elseif it.t == "toggle" then
     self:toggleCtl(it, right, cy, C, layer)
   elseif it.t == "dropdown" or it.t == "multi" then
     self:dropdownCtl(it, ctrlX, cy, ctrlW, C, layer)
@@ -1899,6 +1973,13 @@ function nlui:drawKeybindList(p, X, Y)
   end
 end
 
+function nlui:bindText(bind, key, default)
+  if not bind or bind[key] == nil then return default end
+  local v = self:get(bind[key])
+  if v == nil or v == "" then return default end
+  return tostring(v)
+end
+
 function nlui:bindOn(bind, key, default)
   if not bind or bind[key] == nil then return default end
   local v = self:get(bind[key])
@@ -1974,12 +2055,12 @@ function nlui:drawEspPreview(p, X, Y)
     textShadow("78", hx - 4 * s - measure("78", 11 * s), by + bh * (1 - fill), theme.white, 11 * s)
   end
   if self:bindOn(bind, "name", true) then
-    local n = "Player"
-    textShadow(n, cx - measure(n, 13 * s) / 2, by - 10 * s, theme.white, 13 * s)
+    local n = self:bindText(bind, "playerName", "Player")
+    textShadow(fit(n, iw - 20 * s, 13 * s), cx - min(measure(n, 13 * s), iw - 20 * s) / 2, by - 10 * s, theme.white, 13 * s)
   end
   local below = by + bh + 9 * s
   if self:bindOn(bind, "weapon", true) then
-    local t = "AK-47"
+    local t = self:bindText(bind, "weaponName", "AK-47")
     textShadow(t, cx - measure(t, 12 * s) / 2, below, theme.text, 12 * s)
     below = below + 14 * s
   end
@@ -2147,9 +2228,7 @@ function nlui:renderInner(dt)
     self:drawPanels(false, nil)
     return
   end
-  local oy = self.y
-  self.y = oy + (1 - alpha) * 14 * s
-  local L = self:layout()
+  local L = self:layout((1 - alpha) * 14 * s)
   self.L = L
   if self.open then
     self:updateState(L)
@@ -2165,7 +2244,6 @@ function nlui:renderInner(dt)
   self:drawPopups()
   self:drawToast(L)
   galpha = 1
-  self.y = oy
 end
 
 nlui.autobind()
