@@ -1,6 +1,6 @@
 local nlui = {}
 nlui.__index = nlui
-nlui.version = "2.2.1"
+nlui.version = "2.2.2"
 nlui.dropdownMax = 6
 
 local draw, color = draw, color
@@ -48,6 +48,7 @@ local function rgb(r, g, b) return color.rgba(r, g, b, 255) end
 local theme = {
   font = "Verdana",
   textMode = "sized",
+  textScale = 1,
   menuBg = rgb(15, 16, 20),
   bgAlpha = 250,
   sheenAlpha = 7,
@@ -172,12 +173,10 @@ end
 
 local baseH, cachedFont, cachedMode
 local mcache, mcount = {}, 0
-local function namedMode()
-  return theme.textMode == "named" or type(draw.text) ~= "function"
-end
-local function measure(t, size)
-  if cachedFont ~= theme.font or cachedMode ~= theme.textMode then
-    cachedFont, cachedMode = theme.font, theme.textMode
+local cachedScale
+local function ensureFont()
+  if cachedFont ~= theme.font or cachedMode ~= theme.textMode or cachedScale ~= theme.textScale then
+    cachedFont, cachedMode, cachedScale = theme.font, theme.textMode, theme.textScale
     baseH = nil
     mcache, mcount = {}, 0
   end
@@ -185,12 +184,26 @@ local function measure(t, size)
     local ok, w, h = pcall(draw.GetTextSize, "Ag", theme.font)
     baseH = (ok and type(h) == "number" and h > 0) and h or 13
   end
-  local key = t .. "\1" .. size
+end
+local function useNamed(size)
+  if type(draw.text) ~= "function" then return true end
+  local mode = theme.textMode
+  if mode == "named" then return true end
+  if mode == "hybrid" then
+    ensureFont()
+    return abs(size * (theme.textScale or 1) - baseH) <= baseH * 0.3
+  end
+  return false
+end
+local function measure(t, size)
+  ensureFont()
+  local named = useNamed(size)
+  local key = t .. "\1" .. (named and "n" or size)
   local c = mcache[key]
   if c then return c[1], c[2] end
   local ok, w, h = pcall(draw.GetTextSize, t, theme.font)
   if not ok or type(w) ~= "number" then w, h = #t * baseH * 0.55, baseH end
-  local k = namedMode() and 1 or (size / baseH)
+  local k = named and 1 or (size * (theme.textScale or 1) / baseH)
   if mcount > 4000 then mcache, mcount = {}, 0 end
   mcache[key] = { w * k, (h or baseH) * k }
   mcount = mcount + 1
@@ -229,20 +242,26 @@ nlui.mix = mix
 local function text(t, x, y, col, size, a)
   local al = A(a)
   if al <= 0 then return end
-  if namedMode() then
+  if useNamed(size) then
     if type(draw.text_font) == "function" then
       draw.text_font(t, floor(x), floor(y), col, theme.font, al)
     else
       draw.Text(t, floor(x), floor(y), col, theme.font, al)
     end
   else
-    draw.text(t, floor(x), floor(y), col, floor(size + 0.5), al)
+    draw.text(t, floor(x), floor(y), col, floor(size * (theme.textScale or 1) + 0.5), al)
   end
 end
 
-function nlui.setFont(name, mode)
+function nlui.setFont(name, mode, scale)
   if name then theme.font = name end
   if mode then theme.textMode = mode end
+  if scale then theme.textScale = scale end
+end
+
+function nlui.fontHeight()
+  ensureFont()
+  return baseH
 end
 
 local function textC(t, x, cy, col, size, a)
