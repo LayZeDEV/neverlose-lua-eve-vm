@@ -1,6 +1,6 @@
 local nlui = {}
 nlui.__index = nlui
-nlui.version = "2.2.2"
+nlui.version = "2.3.0"
 nlui.dropdownMax = 6
 
 local draw, color = draw, color
@@ -47,6 +47,7 @@ local function rgb(r, g, b) return color.rgba(r, g, b, 255) end
 
 local theme = {
   font = "Verdana",
+  measureFont = nil,
   textMode = "sized",
   textScale = 1,
   menuBg = rgb(15, 16, 20),
@@ -173,16 +174,29 @@ end
 
 local baseH, cachedFont, cachedMode
 local mcache, mcount = {}, 0
-local cachedScale
+local cachedScale, cachedMeasure, baseHMenu
+local function sizeOf(t, font)
+  local ok, w, h = pcall(draw.GetTextSize, t, font)
+  if ok and type(w) == "number" and type(h) == "number" and h > 0 then return w, h end
+  if font ~= theme.font then
+    ok, w, h = pcall(draw.GetTextSize, t, theme.font)
+    if ok and type(w) == "number" and type(h) == "number" and h > 0 then return w, h end
+  end
+  return nil
+end
 local function ensureFont()
-  if cachedFont ~= theme.font or cachedMode ~= theme.textMode or cachedScale ~= theme.textScale then
-    cachedFont, cachedMode, cachedScale = theme.font, theme.textMode, theme.textScale
-    baseH = nil
+  if cachedFont ~= theme.font or cachedMode ~= theme.textMode or cachedScale ~= theme.textScale or cachedMeasure ~= theme.measureFont then
+    cachedFont, cachedMode, cachedScale, cachedMeasure = theme.font, theme.textMode, theme.textScale, theme.measureFont
+    baseH, baseHMenu = nil, nil
     mcache, mcount = {}, 0
   end
   if not baseH then
-    local ok, w, h = pcall(draw.GetTextSize, "Ag", theme.font)
-    baseH = (ok and type(h) == "number" and h > 0) and h or 13
+    local _, h = sizeOf("Ag", theme.font)
+    baseH = h or 13
+  end
+  if not baseHMenu then
+    local _, h = sizeOf("Ag", theme.measureFont)
+    baseHMenu = h or baseH
   end
 end
 local function useNamed(size)
@@ -201,13 +215,19 @@ local function measure(t, size)
   local key = t .. "\1" .. (named and "n" or size)
   local c = mcache[key]
   if c then return c[1], c[2] end
-  local ok, w, h = pcall(draw.GetTextSize, t, theme.font)
-  if not ok or type(w) ~= "number" then w, h = #t * baseH * 0.55, baseH end
-  local k = named and 1 or (size * (theme.textScale or 1) / baseH)
+  local w, h
+  if named then
+    w, h = sizeOf(t, theme.font)
+    if not w then w, h = #t * baseH * 0.55, baseH end
+  else
+    w, h = sizeOf(t, theme.measureFont)
+    if not w then w, h = #t * baseHMenu * 0.55, baseHMenu end
+  end
+  local k = named and 1 or (size * (theme.textScale or 1) / baseHMenu)
   if mcount > 4000 then mcache, mcount = {}, 0 end
-  mcache[key] = { w * k, (h or baseH) * k }
+  mcache[key] = { w * k, h * k }
   mcount = mcount + 1
-  return w * k, (h or baseH) * k
+  return w * k, h * k
 end
 nlui.measure = measure
 
@@ -513,11 +533,17 @@ icons.chevron_down = function(x, y, sz, col, up)
   line(x, y + h / 2, x + w, y - h / 2, col, t)
 end
 
-icons.chevron_right = function(x, y, sz, col)
+icons.chevron_right = function(x, y, sz, col, turn)
   local t = max(1.5, sz * 0.13)
   local w, h = sz * 0.16, sz * 0.3
-  line(x - w / 2, y - h, x + w / 2, y, col, t)
-  line(x + w / 2, y, x - w / 2, y + h, col, t)
+  local ang = -rad(90) * (type(turn) == "number" and turn or 0)
+  local ca, sa = cos(ang), sin(ang)
+  local function P(px, py) return x + px * ca - py * sa, y + px * sa + py * ca end
+  local ax, ay = P(-w / 2, -h)
+  local bx, by = P(w / 2, 0)
+  local cx, cy = P(-w / 2, h)
+  line(ax, ay, bx, by, col, t)
+  line(bx, by, cx, cy, col, t)
 end
 
 icons.search = function(x, y, sz, col)
@@ -925,6 +951,13 @@ function nlui:toast(msg)
   self.toastText = msg
   self.toastStart = self.now
   self.toastUntil = self.now + 1.8
+end
+
+function nlui:caret(key, x, cy, h, col)
+  local s = self.scale
+  local cx = self:anim("caret:" .. key, x, 40, x)
+  local blink = clamp(1.6 * (0.5 + 0.5 * cos(self.now * 6.2832)), 0, 1)
+  rect(cx, cy - h / 2, max(1, s), h, col or theme.text, 0, 255 * blink)
 end
 
 function nlui:hover(x, y, w, h)
@@ -1341,7 +1374,7 @@ function nlui:sliderCtl(key, v, mn, mx, x, right, cy, C, layer, fmtFn, zeroWord,
     editing.rect = { vx, vy, vw, vh }
     local ex = vx + vw / 2 - tw / 2
     textC(shown, ex, cy, theme.text, C.valFont)
-    if (self.now % 1) < 0.5 then rect(ex + tw + 1, cy - C.valFont * 0.55, max(1, s), C.valFont * 1.1, theme.text) end
+    self:caret(key, ex + tw + 1, cy, C.valFont * 1.1)
   else
     textC(txt, vx + vw / 2 - tw / 2, cy, theme.text, C.valFont)
     if self:click(vx, vy, vw, vh, layer) then
@@ -1405,22 +1438,25 @@ function nlui:inputCtl(it, x, cy, w, C, layer)
     editing.rect = { x, y, w, h }
     local shown = editing.text
     local tw = measure(shown, C.ddFont)
-    local tx = x + C.ddPadL
     if tw > maxW then
       local n = #shown
       while n > 0 and measure(ssub(shown, -n), C.ddFont) > maxW do n = n - 1 end
       shown = ssub(shown, -n)
       tw = measure(shown, C.ddFont)
     end
+    local tx = x + w / 2 - tw / 2
     textC(shown, tx, cy, theme.text, C.ddFont)
-    if (self.now % 1) < 0.5 then rect(tx + tw + 1, cy - C.ddFont * 0.55, max(1, s), C.ddFont * 1.1, theme.text) end
+    self:caret(it.id, tx + tw + 1, cy, C.ddFont * 1.1)
   else
     local v = self:get(it.id)
+    local shown, col
     if v == nil or v == "" then
-      textC(fit(it.placeholder ~= "" and it.placeholder or "...", maxW, C.ddFont), x + C.ddPadL, cy, theme.muted, C.ddFont)
+      shown, col = fit(it.placeholder ~= "" and it.placeholder or "...", maxW, C.ddFont), theme.muted
     else
-      textC(fit(tostring(v), maxW, C.ddFont), x + C.ddPadL, cy, theme.text, C.ddFont)
+      shown, col = fit(tostring(v), maxW, C.ddFont), theme.text
     end
+    local tw = measure(shown, C.ddFont)
+    textC(shown, x + w / 2 - tw / 2, cy, col, C.ddFont)
     if self:click(x, y, w, h, layer) then
       self.capturing = nil
       self.editing = { kind = "text", key = it.id, text = tostring(self:get(it.id) or ""), rect = { x, y, w, h }, apply = function(t) self:set(it.id, t) end }
@@ -1541,7 +1577,8 @@ function nlui:drawSidebar(L)
   self:drawAvatar(X + 52.5 * s, uy + 27.5 * s, 27.5 * s)
   textC(fit(self.user, 120 * s, 20 * s), X + 98 * s, uy + 16 * s, theme.white, 20 * s)
   textC(fit(self.userSub, 120 * s, 15 * s), X + 98 * s, uy + 42 * s, theme.muted, 15 * s)
-  self:drawIcon("chevron_right", X + 243 * s + ua * 3 * s, uy + 27.5 * s, 16 * s, mix(theme.chev, theme.white, ua))
+  local turn = self:anim("uturn", self:popupOpen("account") and 1 or 0, 18, 0)
+  self:drawIcon("chevron_right", X + 243 * s + ua * 3 * s * (1 - turn), uy + 27.5 * s - turn * 2 * s, 16 * s, mix(theme.chev, theme.white, ua), turn)
   if self:click(ux, uy, uw, uh, 0) then self:openAccount(ux, uy, uw, uh) end
 end
 
@@ -1604,9 +1641,12 @@ function nlui:drawTopbar(L)
     else
       textC(fit(self.search, bw - 36 * s, 19 * s), bx + 16 * s, py + 25 * s, theme.text, 19 * s, ta)
     end
-    if self.searchOpen and (self.now % 1) < 0.5 then
+    if self.searchOpen and ta > 0 then
       local tw = measure(self.search, 19 * s)
-      rect(bx + 16 * s + min(tw, bw - 36 * s) + 2, py + 15 * s, max(1, s), 20 * s, theme.text, ta)
+      local base = galpha
+      galpha = base * ta / 255
+      self:caret("search", bx + 16 * s + min(tw, bw - 36 * s) + 2, py + 25 * s, 20 * s)
+      galpha = base
     end
     self.searchRect = { bx, py, ix + 16 * s - bx, ph }
   else
@@ -1836,11 +1876,16 @@ function nlui:drawConfigPopup(p, idx)
     rect(ix, iy, iw, ih, theme.control, 7 * s)
     outline(ix, iy, iw, ih, theme.blue, 7 * s, 255)
     e.rect = { ix, iy, iw, ih }
-    if e.text == "" then textC("Config name", ix + 10 * s, iy + ih / 2, theme.muted, 16 * s)
-    else textC(fit(e.text, iw - 24 * s, 16 * s), ix + 10 * s, iy + ih / 2, theme.text, 16 * s) end
-    if (self.now % 1) < 0.5 then
-      local tw = measure(e.text, 16 * s)
-      rect(ix + 10 * s + min(tw, iw - 24 * s) + 1, iy + 9 * s, max(1, s), ih - 18 * s, theme.text)
+    if e.text == "" then
+      local ph = "Config name"
+      textC(ph, ix + iw / 2 - measure(ph, 16 * s) / 2, iy + ih / 2, theme.muted, 16 * s)
+      self:caret("config", ix + iw / 2, iy + ih / 2, ih - 18 * s)
+    else
+      local shown = fit(e.text, iw - 24 * s, 16 * s)
+      local tw = measure(shown, 16 * s)
+      local tx = ix + iw / 2 - tw / 2
+      textC(shown, tx, iy + ih / 2, theme.text, 16 * s)
+      self:caret("config", tx + tw + 1, iy + ih / 2, ih - 18 * s)
     end
     if self:click(ix, iy, iw, ih, idx) then end
   else
